@@ -1,0 +1,43 @@
+{
+  "summary": "End-to-end testing of Warehouse Picking app (FastAPI + SQLite + React + PDF.js). Backend: 21/21 pytest cases passed. Frontend: numpad login (correct + wrong code), orders list, order view with PDF.js rendering, tap-to-increment overlay, done state (green + checkmark), long-press reset, F5 persistence, actions panel, logout — all verified.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/orders", "issue": "Endpoint is NOT protected by X-Operator-Code header (public list). Consider adding current_operator dependency for consistency with the rest of the API."},
+      {"endpoint": "GET /api/orders/{id}, /api/orders/{id}/pdf, /api/orders/{id}/label, POST /api/orders/{id}/lines/{line_id}/increment, /reset", "issue": "None of these are protected either. Any unauthenticated client can read PDFs, list orders, and mutate picking counters. Only POST /orders and DELETE /orders/{id} require the operator header."},
+      {"endpoint": "POST /api/orders (label upload)", "issue": "If Chronopost cropping fails, label_cropped is set to None but the raw label file is kept on disk without label_pdf_path being persisted for later cropped-retry (label_cropped_path stays NULL). Non-blocking, but the raw label is still accessible via ?cropped=false."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "OrderView header", "issues": ["Progress counter uses format '2/285·1%' with mid-dot separator — legible but could be a bit tight on narrow mobile widths."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/backend_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL/SECURITY: Add current_operator dependency to GET /api/orders, GET /api/orders/{id}, PDF/label serving, increment and reset endpoints so unauthenticated clients cannot read or mutate picking data.",
+    "OPTIONAL: If the operator base is ever expanded, drop the isdigit-only guard in /api/auth/login (currently OK because test codes are all digits)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:206-260 — Most GET/POST endpoints do NOT require the X-Operator-Code header. Only POST /orders (create) and DELETE /orders/{id} check the operator. This is a real authorization gap for a warehouse app: anyone with the public URL can list orders, download PDFs, and even increment/reset picking counters.",
+    "server.py:301 — Global status calculation uses done_lines == total_lines which is correct, but the status transition is only computed inside increment/reset. If lines are added/removed outside these endpoints, status can drift. Currently there is no such path, so OK.",
+    "PdfViewer.jsx — Overlays are rebuilt from scratch every time the `lines` prop changes (whole innerHTML wipe + re-append). This works but leads to `ElementHandle detached` situations in automated tests. Consider keying zones by line.id and updating in place; small perf win, no user-visible bug.",
+    "auth.jsx — The token IS the operator code. Since /api/auth/login only validates that the code is 4 digits and matches a row, the whole app is protected by knowledge of a 4-digit numeric code. Fine for a private tablet, not fine for a public URL.",
+    "server.py:90-93 — Content-type check accepts application/octet-stream as a fallback, but then validates by file extension. This is OK but could accept a masqueraded file. Consider validating PDF header (b'%PDF') server-side."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "Operator codes 1234 / 5678 / 0000 (from /app/memory/test_credentials.md). All accepted by /api/auth/login. 9999 correctly rejected with 401.",
+  "seed_data_creation": "Created one delivery order from the sample bon-de-livraison-56747.pdf + chronopost label — parsed 180 lines, total qty 285, order_number 56747, has_label=true. Order left in DB after tests (delete-test uses its own throwaway order).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend pytest suite lives at /app/backend/tests/backend_test.py and runs against REACT_APP_BACKEND_URL. Sample PDFs are downloaded to /tmp/pdfs/ at runtime — re-download if the tmpfs is wiped (URLs in test_credentials.md). Order 56747 typically has ~180 lines and 285 units. PDF.js worker is loaded from cdn.jsdelivr.net at pdfjs-dist@<version>/build/pdf.worker.min.mjs; if CDN is blocked the viewer fails silently — check pdf-error testid. The frontend re-renders overlay zones on every lines-state change, so Playwright must re-query zone selectors after each click (ElementHandle becomes detached).",
+  "rca of the issue": "N/A — no bugs blocking the flow. Only observation: pdf-zone DOM elements are wiped and re-created on every lines mutation (PdfViewer.jsx:110-167), which causes stale ElementHandles in automated tests and a small flash. Not user-facing."
+}

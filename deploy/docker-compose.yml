@@ -1,0 +1,42 @@
+services:
+    backend:
+        build:
+            context: ..
+            dockerfile: deploy/backend.Dockerfile
+        container_name: picking-backend
+        restart: unless-stopped
+        environment:
+            - CORS_ORIGINS=*
+        volumes:
+            # Persist SQLite DB and uploaded PDFs
+            - picking-data:/app/storage
+        expose:
+            - "8001"
+        healthcheck:
+            test:
+                [
+                    "CMD",
+                    "python",
+                    "-c",
+                    "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/api/health').status==200 else 1)",
+                ]
+            interval: 30s
+            timeout: 5s
+            retries: 3
+
+    frontend:
+        build:
+            context: ..
+            dockerfile: deploy/frontend.Dockerfile
+            args:
+                # Same-origin (nginx proxies /api to backend)
+                REACT_APP_BACKEND_URL: ""
+        container_name: picking-frontend
+        restart: unless-stopped
+        depends_on:
+            - backend
+        ports:
+            - "${WEB_PORT:-8080}:80"
+
+volumes:
+    picking-data:
