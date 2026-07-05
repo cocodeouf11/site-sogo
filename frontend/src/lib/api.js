@@ -38,3 +38,19 @@ export const ordersApi = {
     labelUrl: (id, cropped = true) =>
         `${API_BASE}/orders/${id}/label?cropped=${cropped ? "true" : "false"}&code=${encodeURIComponent(localStorage.getItem("operator_code") || "")}`,
 };
+
+export const labelsApi = {
+    list: () => api.get("/labels").then((r) => r.data),
+    resize: (file, onProgress) => {
+        const fd = new FormData();
+        fd.append("label", file);
+        return api
+            .post("/labels/resize", fd, {
+                headers: { "Content-Type": "multipart/form-data" },
+                onUploadProgress: onProgress,
+            })
+            .then((r) => r.data);
+    },
+    remove: (id) => api.delete(`/labels/${id}`).then((r) => r.data),
+    downloadUrl: (id) => `${API_BASE}/labels/${id}/download?code=${encodeURIComponent(localStorage.getItem("operator_code") || "")}`,
+};

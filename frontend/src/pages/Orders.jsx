@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ordersApi } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { Plus, Search, LogOut, Trash2, Package, CheckCircle2, Clock } from "lucide-react";
+import { Plus, Search, LogOut, Trash2, Package, CheckCircle2, Clock, Tag } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Orders() {
@@ -57,10 +57,14 @@ export default function Orders() {
                     </div>
                 </div>
                 <div className="flex items-center gap-2">
-                    <div className="text-right hidden sm:block">
-                        <div className="text-xs font-bold uppercase text-zinc-500">Opérateur</div>
-                        <div className="font-black">{operator?.name}</div>
-                    </div>
+                    <button
+                        onClick={() => nav("/labels")}
+                        className="h-12 px-3 border-2 border-black bg-white rounded-md active:bg-black active:text-white flex items-center gap-2 font-black uppercase text-sm"
+                        data-testid="labels-nav-btn"
+                    >
+                        <Tag size={18} />
+                        <span className="hidden sm:inline">Étiquettes</span>
+                    </button>
                     <button
                         onClick={() => {
                             logout();

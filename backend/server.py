@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from database import init_db, get_db, STORAGE_DIR
 from pdf_parser import parse_delivery_note
-from chronopost_cropper import crop_chronopost_labels
+from chronopost_cropper import crop_chronopost_labels, resize_label_to_portrait
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -402,6 +402,135 @@ async def get_order_label(order_id: str, cropped: bool = True, code: Optional[st
 @api.get("/health")
 async def health():
     return {"status": "ok", "time": datetime.now(timezone.utc).isoformat()}
+
+
+# ---------- Standalone label resizer ----------
+@api.post("/labels/resize")
+async def resize_label(
+    label: UploadFile = File(...),
+    operator: dict = Depends(current_operator),
+):
+    """Upload a label PDF, run through the resizer (crop + rotate to portrait),
+    and stream back the resulting PDF binary (application/pdf)."""
+    if not label.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "L'étiquette doit être un PDF")
+
+    lid = str(uuid.uuid4())
+    src_path = STORAGE_DIR / "labels" / f"resize_{lid}.pdf"
+    dst_path = STORAGE_DIR / "labels" / f"resize_{lid}_out.pdf"
+
+    size = 0
+    with src_path.open("wb") as f:
+        while chunk := await label.read(1024 * 64):
+            size += len(chunk)
+            if size > MAX_UPLOAD_SIZE:
+                f.close()
+                src_path.unlink(missing_ok=True)
+                raise HTTPException(413, "Fichier trop volumineux (max 25MB)")
+            f.write(chunk)
+
+    try:
+        info = resize_label_to_portrait(str(src_path), str(dst_path))
+    except Exception as e:
+        src_path.unlink(missing_ok=True)
+        dst_path.unlink(missing_ok=True)
+        logger.exception("Label resize failed")
+        raise HTTPException(400, f"Erreur de recadrage: {e}")
+
+    # Register in DB so it's accessible later via /api/labels/{id}/download
+    now_iso = datetime.now(timezone.utc).isoformat()
+    db = await get_db()
+    try:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS resized_labels (
+                id TEXT PRIMARY KEY,
+                filename TEXT,
+                src_path TEXT,
+                dst_path TEXT,
+                pages INTEGER,
+                operator_code TEXT,
+                created_at TEXT
+            )
+        """)
+        await db.execute(
+            "INSERT INTO resized_labels (id, filename, src_path, dst_path, pages, operator_code, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (lid, label.filename, str(src_path), str(dst_path), info["count"], operator["code"], now_iso),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+    return {
+        "id": lid,
+        "filename": label.filename,
+        "pages": info["count"],
+        "labels": info["labels"],
+        "download_url": f"/api/labels/{lid}/download",
+    }
+
+
+@api.get("/labels")
+async def list_resized_labels(operator: dict = Depends(current_operator)):
+    db = await get_db()
+    try:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS resized_labels (
+                id TEXT PRIMARY KEY,
+                filename TEXT,
+                src_path TEXT,
+                dst_path TEXT,
+                pages INTEGER,
+                operator_code TEXT,
+                created_at TEXT
+            )
+        """)
+        async with db.execute(
+            "SELECT id, filename, pages, operator_code, created_at FROM resized_labels ORDER BY created_at DESC"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+@api.get("/labels/{label_id}/download")
+async def download_resized_label(label_id: str, code: Optional[str] = None, x_operator_code: Optional[str] = Header(None)):
+    token = code or x_operator_code
+    if not token:
+        raise HTTPException(401, "Authentification requise")
+    db = await get_db()
+    try:
+        async with db.execute("SELECT id FROM operators WHERE code = ?", (token,)) as cur:
+            if not await cur.fetchone():
+                raise HTTPException(401, "Session invalide")
+        async with db.execute("SELECT dst_path FROM resized_labels WHERE id = ?", (label_id,)) as cur:
+            row = await cur.fetchone()
+        if not row or not row["dst_path"] or not Path(row["dst_path"]).exists():
+            raise HTTPException(404, "Étiquette introuvable")
+        return FileResponse(row["dst_path"], media_type="application/pdf")
+    finally:
+        await db.close()
+
+
+@api.delete("/labels/{label_id}")
+async def delete_resized_label(label_id: str, operator: dict = Depends(current_operator)):
+    db = await get_db()
+    try:
+        async with db.execute("SELECT src_path, dst_path FROM resized_labels WHERE id = ?", (label_id,)) as cur:
+            row = await cur.fetchone()
+        if not row:
+            raise HTTPException(404, "Étiquette introuvable")
+        for p in (row["src_path"], row["dst_path"]):
+            if p and Path(p).exists():
+                try:
+                    Path(p).unlink()
+                except Exception:
+                    pass
+        await db.execute("DELETE FROM resized_labels WHERE id = ?", (label_id,))
+        await db.commit()
+        return {"ok": True}
+    finally:
+        await db.close()
 
 
 app.include_router(api)

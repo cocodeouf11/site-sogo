@@ -1,20 +1,26 @@
 """
-PDF parser for delivery notes (bon de livraison) - SOGO TECH layout.
+PDF parser for delivery notes (bon de livraison).
 
-Layout of the delivery note:
-Each product occupies 2 rows in the table (sometimes 3 if name wraps):
-  Row A: [Product name..., quantity_int]
+Two-row product layout used by SOGO TECH (and similar):
+  Row A: [Product name..., quantity_int]  (product name may wrap on multiple rows)
   Row B: [UGS :, reference, Étagère :, X |, Colonne :, Y |, Tiroir :, Z |, Bac :, W]
+         (sometimes without UGS - just starts with Étagère :)
+         (sometimes with empty values : `Étagère : |`)
 
-The "UGS :" row acts as the terminator for each product. Everything between
-two UGS rows (excluding the previous product's UGS row) is the current
-product's name-and-quantity rows.
+Robust detection strategy:
+1. Extract text spans with positional info.
+2. Group spans into rows by y-position (small tolerance).
+3. For each row, decide if it's a "location row" by looking for the presence
+   of at least two of the location labels (Étagère, Colonne, Tiroir, Bac)
+   OR the presence of "UGS :" and any location label.
+4. Everything between two location rows is buffer content (name + quantity).
+5. The quantity is the LAST integer of the last buffer row (before location).
 
-We return normalized bboxes (0..1) covering the full product block
-so the frontend can overlay clickable zones over the PDF.
+Returns bbox in normalized [0..1] coordinates.
 """
 from __future__ import annotations
 import re
+import unicodedata
 import fitz  # PyMuPDF
 from typing import List, Dict, Any, Optional
 
@@ -24,6 +30,10 @@ ORDER_NUMBER_RE = re.compile(r"(?:commande|order|n[°º]|bon)[^\d]{0,20}(\d{4,8}
 
 def _round(v: float, digits: int = 4) -> float:
     return round(float(v), digits)
+
+
+def _strip_accents(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
 
 
 def _rows_from_page(page) -> List[List[Dict[str, Any]]]:
@@ -58,56 +68,83 @@ def _rows_from_page(page) -> List[List[Dict[str, Any]]]:
     return rows
 
 
-def _parse_ugs_row(row: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Given a row list, if it looks like an UGS row, extract reference and location.
-    Returns None if not an UGS row.
+LOCATION_LABELS = ("etagere", "colonne", "tiroir", "bac")
+
+
+def _is_location_row(row: List[Dict[str, Any]]) -> bool:
+    """A location row must contain at least 2 different location labels
+    (Étagère/Colonne/Tiroir/Bac) OR 'UGS :' + at least 1 location label.
     """
-    full_text = " ".join(s["t"] for s in row)
-    if "UGS" not in full_text and "Étagère" not in full_text and "Etagère" not in full_text:
-        return None
+    lowered = [_strip_accents(s["t"].lower()) for s in row]
+    joined = " ".join(lowered)
+    has_ugs = "ugs" in joined
+    label_hits = sum(1 for lab in LOCATION_LABELS if lab in joined)
+    return label_hits >= 2 or (has_ugs and label_hits >= 1)
 
+
+def _parse_location_row(row: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Extract reference (if UGS present) and etagere/colonne/tiroir/bac values."""
     result = {"reference": None, "etagere": None, "colonne": None, "tiroir": None, "bac": None}
-
-    # Sort by x
     sorted_row = sorted(row, key=lambda s: s["x0"])
     texts = [s["t"] for s in sorted_row]
+    lowered = [_strip_accents(t.lower()) for t in texts]
 
-    # Reference: the token right after "UGS :"
-    for i, t in enumerate(texts):
-        if t.startswith("UGS"):
+    # Reference right after "UGS :"
+    for i, t in enumerate(lowered):
+        if t.startswith("ugs"):
             if i + 1 < len(texts):
-                nxt = texts[i + 1].strip(": ")
-                if nxt and not nxt.startswith("Étag"):
+                nxt = texts[i + 1].strip(": ").strip()
+                if nxt and not _strip_accents(nxt.lower()).startswith("etag"):
                     result["reference"] = nxt
             break
 
-    # Location fields - find the token right after each label.
-    labels = [
-        ("Étagère", "etagere"),
-        ("Etagère", "etagere"),
-        ("Colonne", "colonne"),
-        ("Tiroir", "tiroir"),
-        ("Bac", "bac"),
+    # Location fields
+    label_map = [
+        ("etagere", "etagere"),
+        ("colonne", "colonne"),
+        ("tiroir", "tiroir"),
+        ("bac", "bac"),
     ]
-    for i, t in enumerate(texts):
-        for label, key in labels:
-            if t.startswith(label):
+    for i, t in enumerate(lowered):
+        for prefix, key in label_map:
+            if t.startswith(prefix):
                 if i + 1 < len(texts):
                     val = texts[i + 1].strip()
-                    # Strip trailing " |"
                     val = val.replace("|", "").strip()
                     if val:
                         result[key] = val
                 break
-
-    if not any([result["reference"], result["etagere"], result["colonne"]]):
-        return None
     return result
+
+
+def _extract_quantity_from_buffer(buffer: List[List[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+    """
+    From the "product+quantity" rows preceding a location row, find the
+    quantity. Convention: quantity is the rightmost integer of one of the rows.
+    Prefer the row whose rightmost integer is right-aligned near the page
+    right (i.e., in the Quantité column).
+    """
+    candidates = []
+    for br in buffer:
+        rightmost = max(br, key=lambda s: s["x1"])
+        if re.match(r"^\d{1,4}$", rightmost["t"]):
+            candidates.append((rightmost["x1"], int(rightmost["t"]), rightmost, br))
+    if not candidates:
+        # fallback: any integer anywhere in the buffer
+        for br in buffer:
+            for s in br:
+                if re.match(r"^\d{1,4}$", s["t"]):
+                    return {"quantity": int(s["t"]), "span": s, "row": br}
+        return None
+    # Prefer the rightmost x (Quantité column is on the right)
+    candidates.sort(key=lambda c: -c[0])
+    x1, q, span, br = candidates[0]
+    return {"quantity": q, "span": span, "row": br}
 
 
 def parse_delivery_note(pdf_path: str) -> Dict[str, Any]:
     """
-    Parse a delivery-note PDF (SOGO TECH format).
+    Parse a delivery-note PDF (SOGO TECH format, robust to sub-formats).
     Returns { order_number, pages, lines[] } with bbox normalized 0..1.
     """
     doc = fitz.open(pdf_path)
@@ -117,12 +154,10 @@ def parse_delivery_note(pdf_path: str) -> Dict[str, Any]:
     order_number: Optional[str] = None
     line_counter = 0
 
-    # Buffer of accumulated rows for a product (before UGS row)
     for page_num, page in enumerate(doc, start=1):
         pw, ph = page.rect.width, page.rect.height
         pages_info.append({"width": pw, "height": ph})
 
-        # Attempt to detect order number in top text on first page
         if order_number is None:
             top_txt = page.get_text("text")
             m = ORDER_NUMBER_RE.search(top_txt)
@@ -133,12 +168,10 @@ def parse_delivery_note(pdf_path: str) -> Dict[str, Any]:
         if not rows:
             continue
 
-        # Find header row (contains "Produits" and "Quantité") - if found we start
-        # collecting after it. Otherwise we still scan the whole page in case it's
-        # a continuation page.
+        # Find header row on this page (may not exist on continuation pages)
         start_idx = 0
         for idx, r in enumerate(rows):
-            joined = " ".join(s["t"] for s in r).lower()
+            joined = _strip_accents(" ".join(s["t"] for s in r).lower())
             if "produits" in joined and ("quantit" in joined or "qte" in joined):
                 start_idx = idx + 1
                 break
@@ -146,58 +179,41 @@ def parse_delivery_note(pdf_path: str) -> Dict[str, Any]:
         buffer: List[List[Dict[str, Any]]] = []
         for row in rows[start_idx:]:
             joined_row_text = " ".join(s["t"] for s in row)
-            # Skip page-footer / totals
+            # Skip footer/totals
             if re.match(r"^(page \d|\d+/\d+\s*$|www\.|Tel\.|siret|tva)", joined_row_text, re.IGNORECASE):
                 continue
 
-            ugs = _parse_ugs_row(row)
-            if ugs is not None:
-                # Finalize product using buffer + this UGS row
+            if _is_location_row(row):
                 if not buffer:
                     continue
-
-                # Extract quantity: last integer among rightmost span of buffer rows
-                quantity = None
-                # Prefer rightmost span of the FIRST buffer row that is an integer
-                # (that's the "Quantité" column value).
-                for br in buffer:
-                    rightmost = max(br, key=lambda s: s["x1"])
-                    if re.match(r"^\d{1,4}$", rightmost["t"]):
-                        quantity = int(rightmost["t"])
-                        break
-
-                if quantity is None:
-                    # Try any span that is a plain int
-                    for br in buffer:
-                        for s in br:
-                            if re.match(r"^\d{1,4}$", s["t"]):
-                                quantity = int(s["t"])
-                                break
-                        if quantity is not None:
-                            break
-
-                if quantity is None:
+                loc = _parse_location_row(row)
+                qty_info = _extract_quantity_from_buffer(buffer)
+                if qty_info is None:
                     buffer = []
                     continue
+                qty = qty_info["quantity"]
+                qty_span = qty_info["span"]
 
-                # Build product name: all spans in buffer that aren't the quantity int.
+                # Build product name: all spans in buffer except the quantity integer,
+                # and skip any spurious location tokens.
                 name_parts: List[str] = []
                 for br in buffer:
-                    # sort by x0
                     for s in sorted(br, key=lambda x: x["x0"]):
-                        if re.match(r"^\d{1,4}$", s["t"]):
-                            # Skip the quantity column integer only when it's the rightmost span
-                            rightmost = max(br, key=lambda x: x["x1"])
-                            if s is rightmost:
-                                continue
-                        name_parts.append(s["t"])
-                product_name = " ".join(name_parts).strip()
+                        if s is qty_span:
+                            continue
+                        t = s["t"].strip()
+                        if not t:
+                            continue
+                        # Skip stray location labels inside the buffer
+                        if _strip_accents(t.lower()).rstrip(" :") in LOCATION_LABELS:
+                            continue
+                        name_parts.append(t)
+                product_name = " ".join(name_parts).strip() or None
 
-                # Compute bbox: union of all buffer rows + UGS row
+                # BBox: union of all spans + location row + pad
                 all_spans = [s for br in buffer for s in br] + row
                 y0 = min(s["y0"] for s in all_spans)
                 y1 = max(s["y1"] for s in all_spans)
-                # Widen for easier tap
                 bx0 = 0.02 * pw
                 bx1 = 0.98 * pw
                 by0 = max(0.0, y0 - 2.0)
@@ -208,12 +224,12 @@ def parse_delivery_note(pdf_path: str) -> Dict[str, Any]:
                     "line_index": line_counter,
                     "page": page_num,
                     "product_name": product_name,
-                    "reference": ugs["reference"],
-                    "etagere": ugs["etagere"],
-                    "colonne": ugs["colonne"],
-                    "tiroir": ugs["tiroir"],
-                    "bac": ugs["bac"],
-                    "quantity": quantity,
+                    "reference": loc["reference"],
+                    "etagere": loc["etagere"],
+                    "colonne": loc["colonne"],
+                    "tiroir": loc["tiroir"],
+                    "bac": loc["bac"],
+                    "quantity": qty,
                     "bbox": [
                         _round(bx0 / pw),
                         _round(by0 / ph),
@@ -223,10 +239,8 @@ def parse_delivery_note(pdf_path: str) -> Dict[str, Any]:
                 })
                 buffer = []
             else:
-                # Skip pure noise
-                if not row:
-                    continue
-                buffer.append(row)
+                if row:
+                    buffer.append(row)
 
     doc.close()
 

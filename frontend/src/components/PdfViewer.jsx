@@ -16,19 +16,34 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dis
  */
 export default function PdfViewer({ fileUrl, lines = [], onLineClick, onLineLongPress }) {
     const containerRef = useRef(null);
+    const currentPdfRef = useRef(null); // holds current pdf doc for cleanup
+    const loadTokenRef = useRef(0); // token to abort in-flight loads
     const [pageRenderData, setPageRenderData] = useState([]); // [{ pageNum, width, height }]
-    const [scale, setScale] = useState(1);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
 
-    // Determine base viewport scale from container width.
-    // Higher scale = sharper. We use the render scale but keep CSS width relative.
     const load = useCallback(async () => {
+        // Cancel any in-flight load by incrementing the token.
+        const myToken = ++loadTokenRef.current;
+
         setLoading(true);
         setError(null);
         try {
+            // Destroy previous pdf doc if any
+            if (currentPdfRef.current) {
+                try {
+                    await currentPdfRef.current.destroy();
+                } catch (_) {}
+                currentPdfRef.current = null;
+            }
             const loadingTask = pdfjsLib.getDocument({ url: fileUrl });
             const pdf = await loadingTask.promise;
+            if (myToken !== loadTokenRef.current) {
+                await pdf.destroy();
+                return;
+            }
+            currentPdfRef.current = pdf;
+
             const container = containerRef.current;
             if (!container) return;
 
@@ -36,16 +51,20 @@ export default function PdfViewer({ fileUrl, lines = [], onLineClick, onLineLong
             container.innerHTML = "";
 
             const containerWidth = container.clientWidth - 16; // small padding
-            const dpr = window.devicePixelRatio || 1;
+            const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
             const pageInfo = [];
 
             for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+                if (myToken !== loadTokenRef.current) return; // aborted
+
                 const page = await pdf.getPage(pageNum);
                 const baseViewport = page.getViewport({ scale: 1 });
                 const cssScale = containerWidth / baseViewport.width;
                 const renderScale = cssScale * dpr;
                 const renderViewport = page.getViewport({ scale: renderScale });
+
+                if (myToken !== loadTokenRef.current) return;
 
                 const pageWrap = document.createElement("div");
                 pageWrap.className = "relative bg-white nb-border mx-auto mb-4";
@@ -71,6 +90,8 @@ export default function PdfViewer({ fileUrl, lines = [], onLineClick, onLineLong
                 const ctx = canvas.getContext("2d");
                 await page.render({ canvasContext: ctx, viewport: renderViewport }).promise;
 
+                if (myToken !== loadTokenRef.current) return;
+
                 pageInfo.push({
                     pageNum,
                     width: baseViewport.width * cssScale,
@@ -78,9 +99,11 @@ export default function PdfViewer({ fileUrl, lines = [], onLineClick, onLineLong
                 });
             }
 
+            if (myToken !== loadTokenRef.current) return;
             setPageRenderData(pageInfo);
             setLoading(false);
         } catch (e) {
+            if (myToken !== loadTokenRef.current) return;
             console.error("PDF load error", e);
             setError(String(e?.message || e));
             setLoading(false);
@@ -89,10 +112,20 @@ export default function PdfViewer({ fileUrl, lines = [], onLineClick, onLineLong
 
     useEffect(() => {
         load();
+        return () => {
+            // Invalidate any in-flight load on unmount / dep change
+            loadTokenRef.current += 1;
+            if (currentPdfRef.current) {
+                try {
+                    currentPdfRef.current.destroy();
+                } catch (_) {}
+                currentPdfRef.current = null;
+            }
+        };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [fileUrl]);
 
-    // Handle re-render on resize (debounced)
+    // Re-render on resize (debounced)
     useEffect(() => {
         let t;
         const handle = () => {
@@ -112,58 +145,74 @@ export default function PdfViewer({ fileUrl, lines = [], onLineClick, onLineLong
         const container = containerRef.current;
         if (!container) return;
 
-        // Clear existing overlays
-        container.querySelectorAll("[data-page-overlay]").forEach((ov) => {
-            ov.innerHTML = "";
-        });
-
-        for (const line of lines) {
-            const page = pageRenderData.find((p) => p.pageNum === line.page);
-            if (!page) continue;
-            const overlay = container.querySelector(`[data-page-overlay="${line.page}"]`);
-            if (!overlay) continue;
-
-            const zone = document.createElement("div");
-            const done = line.picked >= line.quantity;
-            const partial = line.picked > 0 && !done;
-            zone.className = `pdf-zone ${done ? "pdf-zone--done" : partial ? "pdf-zone--partial" : "pdf-zone--todo"}`;
-            zone.style.left = `${line.x * page.width}px`;
-            zone.style.top = `${line.y * page.height}px`;
-            zone.style.width = `${line.width * page.width}px`;
-            zone.style.height = `${line.height * page.height}px`;
-            zone.dataset.testid = `pdf-line-${line.line_index}`;
-            zone.dataset.lineId = line.id;
-
-            const badge = document.createElement("div");
-            badge.className = `pdf-badge ${done ? "pdf-badge--done" : ""}`;
-            badge.textContent = done ? "✓" : `${line.picked}/${line.quantity}`;
-            zone.appendChild(badge);
-
-            let pressTimer;
-            const handlePress = (e) => {
-                e.preventDefault();
-                if (onLineClick) onLineClick(line);
-            };
-            zone.addEventListener("click", handlePress);
-            // Long-press for reset
-            const onDown = () => {
-                if (!onLineLongPress) return;
-                pressTimer = setTimeout(() => {
-                    onLineLongPress(line);
-                    pressTimer = null;
-                }, 700);
-            };
-            const cancel = () => {
-                if (pressTimer) clearTimeout(pressTimer);
-                pressTimer = null;
-            };
-            zone.addEventListener("pointerdown", onDown);
-            zone.addEventListener("pointerup", cancel);
-            zone.addEventListener("pointerleave", cancel);
-            zone.addEventListener("pointercancel", cancel);
-
-            overlay.appendChild(zone);
+        // Group lines by page in one pass (much cheaper than repeated queries)
+        const linesByPage = new Map();
+        for (const l of lines) {
+            if (!linesByPage.has(l.page)) linesByPage.set(l.page, []);
+            linesByPage.get(l.page).push(l);
         }
+
+        // Iterate actual page overlays present in the DOM (there should be
+        // exactly one per rendered page). If duplicates exist (React StrictMode
+        // race), the load-cleanup should already have removed them.
+        const overlays = container.querySelectorAll("[data-page-overlay]");
+        overlays.forEach((overlay) => {
+            const pageNum = Number(overlay.dataset.pageOverlay);
+            const page = pageRenderData.find((p) => p.pageNum === pageNum);
+            if (!page) return;
+
+            // Clear existing zones on this overlay
+            overlay.innerHTML = "";
+            const pageLines = linesByPage.get(pageNum) || [];
+            for (const line of pageLines) {
+                const zone = document.createElement("div");
+                const done = line.picked >= line.quantity;
+                const partial = line.picked > 0 && !done;
+                zone.className = `pdf-zone ${done ? "pdf-zone--done" : partial ? "pdf-zone--partial" : "pdf-zone--todo"}`;
+                zone.style.left = `${line.x * page.width}px`;
+                zone.style.top = `${line.y * page.height}px`;
+                zone.style.width = `${line.width * page.width}px`;
+                zone.style.height = `${line.height * page.height}px`;
+                zone.dataset.testid = `pdf-line-${line.line_index}`;
+                zone.dataset.lineId = line.id;
+
+                const badge = document.createElement("div");
+                badge.className = `pdf-badge ${done ? "pdf-badge--done" : ""}`;
+                badge.textContent = done ? "✓" : `${line.picked}/${line.quantity}`;
+                zone.appendChild(badge);
+
+                let pressTimer;
+                let longFired = false;
+                const handlePress = (e) => {
+                    e.preventDefault();
+                    if (longFired) {
+                        longFired = false;
+                        return;
+                    }
+                    if (onLineClick) onLineClick(line);
+                };
+                zone.addEventListener("click", handlePress);
+                const onDown = () => {
+                    if (!onLineLongPress) return;
+                    longFired = false;
+                    pressTimer = setTimeout(() => {
+                        longFired = true;
+                        onLineLongPress(line);
+                        pressTimer = null;
+                    }, 700);
+                };
+                const cancel = () => {
+                    if (pressTimer) clearTimeout(pressTimer);
+                    pressTimer = null;
+                };
+                zone.addEventListener("pointerdown", onDown);
+                zone.addEventListener("pointerup", cancel);
+                zone.addEventListener("pointerleave", cancel);
+                zone.addEventListener("pointercancel", cancel);
+
+                overlay.appendChild(zone);
+            }
+        });
     }, [lines, pageRenderData, loading, onLineClick, onLineLongPress]);
 
     return (

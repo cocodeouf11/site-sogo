@@ -79,6 +79,19 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_lines_order ON order_lines(order_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_orders_number ON orders(order_number)")
 
+        # Standalone resized labels table
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS resized_labels (
+            id TEXT PRIMARY KEY,
+            filename TEXT,
+            src_path TEXT,
+            dst_path TEXT,
+            pages INTEGER,
+            operator_code TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
         # Seed default operators
         async with db.execute("SELECT COUNT(*) FROM operators") as cur:
             row = await cur.fetchone()

@@ -6,6 +6,7 @@ import Orders from "@/pages/Orders";
 import OrderView from "@/pages/OrderView";
 import UploadPage from "@/pages/UploadPage";
 import LabelPrint from "@/pages/LabelPrint";
+import LabelsPage from "@/pages/LabelsPage";
 import { Toaster } from "@/components/ui/sonner";
 
 function Protected({ children }) {
@@ -49,6 +50,14 @@ export default function App() {
                         element={
                             <Protected>
                                 <LabelPrint />
+                            </Protected>
+                        }
+                    />
+                    <Route
+                        path="/labels"
+                        element={
+                            <Protected>
+                                <LabelsPage />
                             </Protected>
                         }
                     />
