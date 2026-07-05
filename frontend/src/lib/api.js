@@ -34,6 +34,7 @@ export const ordersApi = {
     increment: (orderId, lineId, delta = 1) =>
         api.post(`/orders/${orderId}/lines/${lineId}/increment`, { delta }).then((r) => r.data),
     resetLine: (orderId, lineId) => api.post(`/orders/${orderId}/lines/${lineId}/reset`).then((r) => r.data),
-    pdfUrl: (id) => `${API_BASE}/orders/${id}/pdf`,
-    labelUrl: (id, cropped = true) => `${API_BASE}/orders/${id}/label?cropped=${cropped ? "true" : "false"}`,
+    pdfUrl: (id) => `${API_BASE}/orders/${id}/pdf?code=${encodeURIComponent(localStorage.getItem("operator_code") || "")}`,
+    labelUrl: (id, cropped = true) =>
+        `${API_BASE}/orders/${id}/label?cropped=${cropped ? "true" : "false"}&code=${encodeURIComponent(localStorage.getItem("operator_code") || "")}`,
 };

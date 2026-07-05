@@ -203,7 +203,7 @@ async def create_order(
 
 
 @api.get("/orders")
-async def list_orders(q: Optional[str] = None):
+async def list_orders(q: Optional[str] = None, operator: dict = Depends(current_operator)):
     db = await get_db()
     try:
         if q:
@@ -220,7 +220,7 @@ async def list_orders(q: Optional[str] = None):
 
 
 @api.get("/orders/{order_id}")
-async def get_order(order_id: str):
+async def get_order(order_id: str, operator: dict = Depends(current_operator)):
     db = await get_db()
     try:
         async with db.execute("SELECT * FROM orders WHERE id = ?", (order_id,)) as cur:
@@ -266,7 +266,7 @@ class IncrementIn(BaseModel):
 
 
 @api.post("/orders/{order_id}/lines/{line_id}/increment")
-async def increment_line(order_id: str, line_id: str, payload: IncrementIn):
+async def increment_line(order_id: str, line_id: str, payload: IncrementIn, operator: dict = Depends(current_operator)):
     if payload.delta not in (1, -1):
         raise HTTPException(400, "delta doit être 1 ou -1")
     db = await get_db()
@@ -322,7 +322,7 @@ async def increment_line(order_id: str, line_id: str, payload: IncrementIn):
 
 
 @api.post("/orders/{order_id}/lines/{line_id}/reset")
-async def reset_line(order_id: str, line_id: str):
+async def reset_line(order_id: str, line_id: str, operator: dict = Depends(current_operator)):
     db = await get_db()
     try:
         await db.execute(
@@ -351,9 +351,17 @@ async def reset_line(order_id: str, line_id: str):
 
 
 @api.get("/orders/{order_id}/pdf")
-async def get_order_pdf(order_id: str):
+async def get_order_pdf(order_id: str, code: Optional[str] = None, x_operator_code: Optional[str] = Header(None)):
+    """PDF fetch: accepts token via query `?code=` OR header `X-Operator-Code`
+    (allows PDF.js and <object> tags which can't easily set custom headers)."""
+    token = code or x_operator_code
+    if not token:
+        raise HTTPException(401, "Authentification requise")
     db = await get_db()
     try:
+        async with db.execute("SELECT id FROM operators WHERE code = ?", (token,)) as cur:
+            if not await cur.fetchone():
+                raise HTTPException(401, "Session invalide")
         async with db.execute("SELECT delivery_pdf_path FROM orders WHERE id = ?", (order_id,)) as cur:
             row = await cur.fetchone()
         if not row or not row["delivery_pdf_path"] or not Path(row["delivery_pdf_path"]).exists():
@@ -364,7 +372,17 @@ async def get_order_pdf(order_id: str):
 
 
 @api.get("/orders/{order_id}/label")
-async def get_order_label(order_id: str, cropped: bool = True):
+async def get_order_label(order_id: str, cropped: bool = True, code: Optional[str] = None, x_operator_code: Optional[str] = Header(None)):
+    token = code or x_operator_code
+    if not token:
+        raise HTTPException(401, "Authentification requise")
+    db_c = await get_db()
+    try:
+        async with db_c.execute("SELECT id FROM operators WHERE code = ?", (token,)) as cur:
+            if not await cur.fetchone():
+                raise HTTPException(401, "Session invalide")
+    finally:
+        await db_c.close()
     db = await get_db()
     try:
         async with db.execute(
