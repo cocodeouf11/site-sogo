@@ -1,0 +1,34 @@
+{
+  "summary": "Full regression on Chronopost label rotation fix (rot=90° instead of 270°) + PdfViewer race condition + parser robustness. Backend: 28/28 pytest cases passed (auth, orders CRUD, PDF/label serving, increment/reset, validation, delete, /api/labels/* resize+list+delete, parser regressions for 56747/56755/56662). Frontend: LabelsPage upload→preview→download→history→delete flow OK; PdfViewer on 56755 now shows exactly 3 [data-page-overlay] (not 5/6) and 33 .pdf-zone; clicks on pages 2 & 3 advance progress-counter from 0/38 to 2/38.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/backend_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "chronopost_cropper.py:132-139 — resize_label_to_portrait now uses rotate=90 (correct). Verified via PyMuPDF: for label1.pdf (842×595 landscape) the resulting page is 286.46×420 (portrait) and 'Fenouillet' text bbox y=124-162 sits in the upper half (rect.height/2=210). Matches target 2.pdf layout.",
+    "server.py — All GET endpoints (list orders, get order, PDF, label, labels list/download) now require operator auth (via X-Operator-Code header or ?code= query). This closes the auth gap flagged in iteration_1 (previous test file assumed public reads and had to be updated to send the header/code).",
+    "server.py:444-461 — POST /api/labels/resize CREATE TABLE IF NOT EXISTS resized_labels on every request. Slightly wasteful but idempotent and safe; also handled in init_db. OK.",
+    "PdfViewer.jsx:20,27,41,59,67,93,102,117 — loadTokenRef pattern properly cancels stale in-flight loads (React StrictMode double-invoke + fileUrl churn). Confirmed empirically: 56755 produces exactly 3 page overlays / 33 zones and no dupes.",
+    "LabelsPage.jsx — Download link uses labelsApi.downloadUrl() which appends ?code=<localStorage token> so <object> and download attribute work without headers. Consistent with pdfUrl/labelUrl on ordersApi."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (added TestLabelResize + TestParserRegression, and adapted existing tests to new auth requirements on GET endpoints)"
+  ],
+  "success_rate": {"backend": "100% (28/28)", "frontend": "100%"},
+  "test_credentials": "Operator codes 1234 / 5678 / 0000 (from /app/memory/test_credentials.md). Header X-Operator-Code or query ?code=<code> depending on endpoint.",
+  "seed_data_creation": "During tests: transient orders for 56747/56755/56662 (cleaned up) and one delivery+label order (cleaned up by fixture teardown). LabelsPage test created 4 resized_labels (one deleted by test, 3 remain in DB from prior UI runs — harmless).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend pytest file is /app/backend/tests/backend_test.py; sample PDFs are downloaded to /tmp/pdfs/ (delivery.pdf=56747, delivery-56755.pdf, delivery-56662.pdf, label1.pdf=landscape sample, label2.pdf=target portrait, label.pdf=chronopost). All GET endpoints now REQUIRE X-Operator-Code header or ?code= query param — do not assume public access. /api/labels/resize returns {id, filename, pages, labels:[{page, rotated, width_pt, height_pt}], download_url}. For UI, Numpad testids are numpad-key-{0..9} / numpad-key-submit / numpad-key-clear (NOT numpad-{d}).",
+  "rca of the issue": "N/A — the fix (rotate=90 instead of 270 in chronopost_cropper.resize_label_to_portrait) is verified correct both by unit-level PyMuPDF inspection and end-to-end via /api/labels/resize + /api/labels/{id}/download. Reproduction confirmed: with rot=270 the 'Fenouillet' text would land in the lower half of the portrait page (y≈257 on height 420); with rot=90 it correctly lands at y≈124-162 (upper half), matching target label 2.pdf."
+}

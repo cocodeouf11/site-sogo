@@ -135,7 +135,7 @@ def resize_label_to_portrait(src_pdf: str, dst_pdf: str) -> dict:
                 src,
                 page_num - 1,
                 clip=bbox,
-                rotate=270,  # CCW to bring right side up when source is landscape
+                rotate=90,  # rotate the landscape source 90° so it fits portrait
             )
         else:
             new_page.show_pdf_page(
