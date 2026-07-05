@@ -1,0 +1,107 @@
+{
+  "project_name": "Warehouse Order Picking App",
+  "theme": {
+    "archetype": "Archetype 4: Swiss & High-Contrast (Industrial/Rugged Variant)",
+    "mode": "light",
+    "rationale": "High-contrast brutalism ensures absolute clarity in rugged warehouse environments. The stark white background blends with the PDF documents, while heavy black elements and highly saturated status colors (Signal Green, Warning Orange) provide unmistakable visual cues for operators wearing gloves."
+  },
+  "color_palette": {
+    "background": {
+      "base": "#F4F4F5",
+      "surface": "#FFFFFF",
+      "pdf_backdrop": "#E4E4E7"
+    },
+    "text": {
+      "primary": "#09090B",
+      "secondary": "#52525B",
+      "inverse": "#FFFFFF"
+    },
+    "status": {
+      "success": "#16A34A",
+      "success_overlay": "rgba(22, 163, 74, 0.3)",
+      "warning": "#F97316",
+      "warning_overlay": "rgba(249, 115, 22, 0.3)",
+      "error": "#DC2626",
+      "border_dark": "#000000"
+    }
+  },
+  "typography": {
+    "font_family": {
+      "headings": "'IBM Plex Sans', sans-serif",
+      "body": "'IBM Plex Sans', sans-serif",
+      "monospace": "'IBM Plex Mono', monospace"
+    },
+    "scale": {
+      "h1": "text-4xl md:text-5xl font-black tracking-tight",
+      "h2": "text-3xl font-bold tracking-tight",
+      "h3": "text-2xl font-bold",
+      "body_large": "text-xl font-medium",
+      "body": "text-lg",
+      "labels": "text-sm font-bold uppercase tracking-[0.1em]"
+    },
+    "rules": [
+      "Use IBM Plex Sans for its mechanical, tabular clarity which is perfect for reading serial numbers, product references, and quantities.",
+      "Use tabular-nums utility class for all numbers (counters, order IDs) to prevent layout shifting."
+    ]
+  },
+  "spacing_and_layout": {
+    "philosophy": "Mobile-first, hyper-accessible for gloved hands.",
+    "touch_targets": {
+      "minimum_height": "min-h-[80px]",
+      "standard_button": "h-20 or h-24",
+      "numpad_key": "h-24 sm:h-32",
+      "padding": "p-6 to p-8 internally"
+    },
+    "grid_system": {
+      "mobile": "grid-cols-1 gap-6",
+      "numpad": "grid-cols-3 gap-4"
+    },
+    "surfaces": "Neo-brutalist style. Use solid 2px or 3px black borders (border-black border-2) instead of soft drop-shadows. Sharp corners (rounded-none or max rounded-md)."
+  },
+  "components": {
+    "login_numpad": {
+      "description": "Massive 3x4 numeric keypad for operator code entry.",
+      "styles": "Grid items must be button elements with 'h-24 text-4xl font-black border-2 border-black bg-white active:bg-black active:text-white transition-colors duration-75'.",
+      "testid_pattern": "data-testid='numpad-key-{number}'"
+    },
+    "progress_bar": {
+      "description": "Fixed top header during picking.",
+      "styles": "Sticky top-0 z-50 h-24 bg-white border-b-4 border-black flex flex-col justify-center px-4. Includes a background fill acting as the actual progress indicator (bg-green-500) behind the text.",
+      "text_styles": "text-2xl font-black tabular-nums z-10 relative text-black"
+    },
+    "pdf_overlay_zones": {
+      "description": "Clickable zones over the PDF lines.",
+      "unclicked_state": "bg-transparent border-2 border-dashed border-black/20",
+      "partial_state": "bg-[#F97316]/30 border-2 border-[#F97316]",
+      "completed_state": "bg-[#16A34A]/30 border-2 border-[#16A34A]",
+      "counter_badge": "Absolute right-4 top-1/2 -translate-y-1/2 bg-black text-white text-2xl font-black px-4 py-2 rounded-full tabular-nums min-w-[80px] text-center"
+    },
+    "upload_button": {
+      "description": "Massive dropzone/button for importing PDF and label.",
+      "styles": "w-full min-h-[200px] border-4 border-dashed border-black bg-zinc-100 flex flex-col items-center justify-center gap-4 active:bg-zinc-200",
+      "icon": "UploadSimple from @phosphor-icons/react, size 64"
+    },
+    "action_buttons": {
+      "description": "Primary CTA like 'Terminer', 'Retour'.",
+      "styles": "w-full h-20 bg-black text-white text-2xl font-black uppercase tracking-widest active:scale-[0.98] transition-transform"
+    }
+  },
+  "motion_and_feedback": {
+    "animations": "Extremely fast and snappy. No long transitions. Gloves cause input latency, so UI must react instantly.",
+    "durations": "duration-75",
+    "haptic_visual": "On click, overlay zones should flash momentarily or elements should scale down slightly (active:scale-95) to provide clear visual tactile feedback."
+  },
+  "assets_and_icons": {
+    "library": "@phosphor-icons/react",
+    "weight": "bold",
+    "instructions": "Use heavy, easily recognizable icons. Search terms for any additional images should be strictly industrial if needed, but primarily use Phosphor icons."
+  },
+  "instructions_to_main_agent": [
+    "Ensure all buttons and clickable areas have a minimum height of 80px (h-20).",
+    "Implement the PDF.js canvas with absolute positioned div overlays based on metadata coordinates.",
+    "Apply `data-testid` to all interactive elements (e.g., data-testid='upload-pdf-btn', data-testid='pdf-line-item-1').",
+    "Use tabular-nums for all numbers (counters, orders, percentages) to avoid jitter when numbers increment.",
+    "Do not use generic Shadcn cards with soft shadows. Strip the soft shadows and apply solid 2px black borders (Neo-Brutalist) for higher contrast and ruggedness.",
+    "Use `IBM Plex Sans` via Google Fonts. Add it to the global CSS."
+  ]
+}
